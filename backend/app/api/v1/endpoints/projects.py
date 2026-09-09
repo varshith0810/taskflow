@@ -1,6 +1,6 @@
 """
 /projects  – project CRUD and member management.
- 
+
 Role matrix
 -----------
 List projects    : any authenticated user (sees own projects; admin sees all)
@@ -12,10 +12,10 @@ Add member       : OWNER / MANAGER / admin
 Update member    : OWNER / admin
 Remove member    : OWNER / admin  (or the member themselves — self-leave)
 """
- 
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
- 
+
 from app.api.v1.deps import (
     get_current_user,
     project_manager_dep,
@@ -34,12 +34,12 @@ from app.schemas.schemas import (
     ProjectUpdate,
     UpdateMemberRole,
 )
- 
+
 router = APIRouter(prefix="/projects", tags=["Projects"])
- 
- 
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────────
- 
+
 @router.get("", response_model=list[ProjectResponse])
 def list_projects(
     skip: int = Query(0, ge=0),
@@ -47,13 +47,16 @@ def list_projects(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List projects the caller belongs to (admin sees all)."""
-    q = db.query(Project).filter(Project.is_active == True)
-    if current_user.role != GlobalRole.ADMIN:
-        q = q.join(ProjectMember).filter(ProjectMember.user_id == current_user.id)
+    """List projects the caller belongs to."""
+    q = (
+        db.query(Project)
+        .filter(Project.is_active.is_(True))
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .filter(ProjectMember.user_id == current_user.id)
+    )
     return q.offset(skip).limit(limit).all()
- 
- 
+
+
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 def create_project(
     payload: ProjectCreate,
@@ -70,7 +73,7 @@ def create_project(
             db.query(User)
             .filter(
                 User.id.in_(selected_member_ids),
-                User.is_active == True,
+                User.is_active.is_(True),
                 User.organization_name == current_user.organization_name,
             )
             .all()
@@ -83,14 +86,11 @@ def create_project(
     else:
         selected_members = []
 
-    project = Project(**data)
 
     project = Project(**data)
-    """Create a project (admin only). The creator is automatically added as OWNER."""
-    project = Project(**payload.model_dump())
-
     db.add(project)
     db.flush()  # get project.id before commit
+
     membership = ProjectMember(
         project_id=project.id,
         user_id=current_user.id,
@@ -108,8 +108,8 @@ def create_project(
     db.commit()
     db.refresh(project)
     return project
- 
- 
+
+
 @router.get("/{project_id}", response_model=ProjectDetail)
 def get_project(
     access=Depends(project_member_dep),
@@ -127,8 +127,8 @@ def get_project(
     detail = ProjectDetail.model_validate(project_with_members)
     detail.task_count = task_count
     return detail
- 
- 
+
+
 @router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(
     payload: ProjectUpdate,
@@ -142,8 +142,8 @@ def update_project(
     db.commit()
     db.refresh(project)
     return project
- 
- 
+
+
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(
     access=Depends(project_owner_dep),
@@ -153,10 +153,10 @@ def delete_project(
     project, _ = access
     project.is_active = False
     db.commit()
- 
- 
+
+
 # ── Member management ─────────────────────────────────────────────────────────
- 
+
 @router.get("/{project_id}/members", response_model=list[MemberInProject])
 def list_members(
     access=Depends(project_member_dep),
@@ -169,8 +169,8 @@ def list_members(
         .filter_by(project_id=project.id)
         .all()
     )
- 
- 
+
+
 @router.post("/{project_id}/members", response_model=MemberInProject, status_code=status.HTTP_201_CREATED)
 def add_member(
     payload: AddMemberRequest,
@@ -184,21 +184,21 @@ def add_member(
     target_user = db.get(User, payload.user_id)
     if not target_user or not target_user.is_active:
         raise HTTPException(status_code=404, detail="Target user not found")
- 
+
     if current_user and target_user.organization_name != current_user.organization_name:
         raise HTTPException(status_code=400, detail="Target user must be in your organization")
 
     existing = db.query(ProjectMember).filter_by(project_id=project.id, user_id=payload.user_id).first()
     if existing:
         raise HTTPException(status_code=409, detail="User is already a member")
- 
+
     membership = ProjectMember(project_id=project.id, user_id=payload.user_id, role=payload.role)
     db.add(membership)
     db.commit()
     db.refresh(membership)
     return membership
- 
- 
+
+
 @router.patch("/{project_id}/members/{user_id}", response_model=MemberInProject)
 def update_member_role(
     user_id: int,
@@ -211,12 +211,18 @@ def update_member_role(
     membership = db.query(ProjectMember).filter_by(project_id=project.id, user_id=user_id).first()
     if not membership:
         raise HTTPException(status_code=404, detail="Member not found")
+
+    if membership.role == ProjectRole.OWNER and payload.role != ProjectRole.OWNER:
+        owners = db.query(ProjectMember).filter_by(project_id=project.id, role=ProjectRole.OWNER).count()
+        if owners <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the last owner")
+
     membership.role = payload.role
     db.commit()
     db.refresh(membership)
     return membership
- 
- 
+
+
 @router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_member(
     user_id: int,
@@ -227,30 +233,30 @@ def remove_member(
     db: Session = Depends(get_db),
 ):
     """Remove a member from the project.
- 
+
     Allowed when:
       - caller is the OWNER or a global ADMIN, OR
       - caller is removing themselves (self-leave)
     """
     project, caller_membership = access
- 
+
     is_owner_or_admin = (
         caller_membership.role == ProjectRole.OWNER
         or current_user.role == GlobalRole.ADMIN
     )
     is_self_leave = current_user.id == user_id
- 
+
     if not is_owner_or_admin and not is_self_leave:
         raise HTTPException(status_code=403, detail="Not allowed to remove other members")
- 
+
     membership = db.query(ProjectMember).filter_by(project_id=project.id, user_id=user_id).first()
     if not membership:
         raise HTTPException(status_code=404, detail="Member not found")
- 
+
     if membership.role == ProjectRole.OWNER:
         owners = db.query(ProjectMember).filter_by(project_id=project.id, role=ProjectRole.OWNER).count()
         if owners <= 1:
             raise HTTPException(status_code=400, detail="Cannot remove the last owner")
- 
+
     db.delete(membership)
     db.commit()

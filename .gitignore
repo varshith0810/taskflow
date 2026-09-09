@@ -1,10 +1,35 @@
 # Frontend artifacts
 frontend/node_modules/
 frontend/dist/
+frontend/.env.local
 
-# Python bytecode
+# Python bytecode & virtual environments
+__pycache__/
 **/__pycache__/
 *.py[cod]
+.venv/
+venv/
+ENV/
 
-# Env files
+# Testing & Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases (PostgreSQL used in production)
+*.db
+*.sqlite
+*.sqlite3
+
+# Env files (Railway injects env vars directly)
 .env
+.env.*
+backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp

@@ -1,18 +1,24 @@
-const BASE = import.meta.env.VITE_API_URL || '';
+const isLocal = typeof window !== 'undefined' && (window.location.port === '8000' || window.location.port === '5173');
+const BASE = isLocal ? '' : (import.meta.env.VITE_API_URL || '');
 
 function getToken() {
   return localStorage.getItem('access_token');
 }
 
 async function request(path, options = {}) {
+  const isAuthEndpoint = path === '/auth/login' || path === '/auth/signup';
   const token = getToken();
   const headers = { 'Content-Type': 'application/json', ...options.headers };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  
+  // Do not send stale authorization headers to login/signup endpoints
+  if (token && !isAuthEndpoint) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
 
   const res = await fetch(`${BASE}/api/v1${path}`, { ...options, headers });
 
-  if (res.status === 401) {
-    // Try refresh
+  // Only attempt automatic token refresh for protected authenticated routes, never for login/signup
+  if (res.status === 401 && !isAuthEndpoint) {
     const refreshed = await tryRefresh();
     if (refreshed) {
       headers['Authorization'] = `Bearer ${getToken()}`;
@@ -26,7 +32,7 @@ async function request(path, options = {}) {
       localStorage.removeItem('access_token');
       localStorage.removeItem('refresh_token');
       window.dispatchEvent(new Event('auth:logout'));
-      throw new Error('Session expired');
+      throw new Error('Session expired. Please log in again.');
     }
   }
 
@@ -61,6 +67,9 @@ async function tryRefresh() {
 export const auth = {
   signup: (data) => request('/auth/signup', { method: 'POST', body: JSON.stringify(data) }),
   login: async (data) => {
+    // Clear any stale tokens before authenticating
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
     const res = await request('/auth/login', { method: 'POST', body: JSON.stringify(data) });
     localStorage.setItem('access_token', res.access_token);
     localStorage.setItem('refresh_token', res.refresh_token);

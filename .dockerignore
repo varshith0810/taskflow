@@ -1,0 +1,38 @@
+# Version control & IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Python virtual environment & caches
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+*.egg-info
+pytest.ini
+backend/pytest.ini
+
+# Test suites & test data
+backend/tests
+
+# Local SQLite databases (Production uses PostgreSQL on Railway)
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files with local dev secrets
+.env
+.env.*
+backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example
+
+# Frontend local build & dependencies (Stage 1 runs npm install and build cleanly)
+frontend/node_modules
+frontend/dist
+frontend/.env.local

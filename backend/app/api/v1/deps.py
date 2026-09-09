@@ -46,7 +46,7 @@ def get_project_or_404(project_id: int, db: Session = Depends(get_db)) -> Projec
     return project
  
  
-def _get_membership(project_id: int, user: User, db: Session) -> ProjectMember:
+def _get_membership(project_id: int, user: User, db: Session) -> ProjectMember | None:
     membership = (
         db.query(ProjectMember)
         .filter_by(project_id=project_id, user_id=user.id)
