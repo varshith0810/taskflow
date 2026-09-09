@@ -1,0 +1,23 @@
+services:
+  taskflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/varshith0810/taskflow:latest
+    container_name: taskflow-app
+    restart: always
+    ports:
+      - "80:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - SECRET_KEY=${SECRET_KEY:-prod-secure-taskflow-secret-key-32bytes-long}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/task_manager.db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+    volumes:
+      - taskflow-data:/app/data
+
+volumes:
+  taskflow-data:
