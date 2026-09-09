@@ -1,4 +1,4 @@
-name: CI/CD Pipeline - AWS Low-Cost Deployment
+name: CI/CD Pipeline — TaskFlow AWS Production
 
 on:
   push:
@@ -10,9 +10,9 @@ permissions:
   packages: write
 
 jobs:
-  # ── Step 1: Run Automated Tests ──────────────────────────────────────────
+  # ── Step 1: Run Backend Tests ─────────────────────────────────────────────
   test:
-    name: Run Automated Tests
+    name: Run Backend Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -33,9 +33,9 @@ jobs:
 
       - name: Run Backend Tests
         run: |
-          pytest backend/tests
+          pytest backend/tests -v
 
-  # ── Step 2: Build & Push Container Image to GHCR ────────────────────────
+  # ── Step 2: Build & Push Docker Image to GHCR ────────────────────────────
   build-and-push:
     name: Build & Push Docker Image
     needs: test
@@ -67,47 +67,32 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Step 3: Deploy to AWS via SSH ───────────────────────────────────────
+  # ── Step 3: Deploy to AWS EC2 via SSH ────────────────────────────────────
   deploy:
-    name: Deploy to AWS
+    name: Deploy to AWS EC2
     needs: build-and-push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - name: Deploy on AWS Server
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.AWS_HOST }}
-          username: ${{ secrets.AWS_SSH_USER || 'ubuntu' }}
+          username: ${{ secrets.AWS_SSH_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-          port: 22
+          port: ${{ secrets.AWS_SSH_PORT || 22 }}
           script: |
-            mkdir -p ~/taskflow
-            cd ~/taskflow
+            set -e
+            mkdir -p ~/taskflow && cd ~/taskflow
 
-            echo "[*] Authenticating with GHCR..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "[1/5] Authenticating with GHCR..."
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+              -u ${{ github.actor }} --password-stdin
 
-            echo "[*] Writing docker-compose.yml configuration..."
-            cat << 'EOF' > docker-compose.yml
+            echo "[2/5] Writing docker-compose.yml (RDS-backed, no local DB container)..."
+            cat > docker-compose.yml << 'COMPOSE'
             services:
-              db:
-                image: postgres:16-alpine
-                container_name: taskflow-postgres
-                restart: always
-                environment:
-                  POSTGRES_USER: taskflow_admin
-                  POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'taskflow_secure_prod_password_2026' }}
-                  POSTGRES_DB: taskflow_db
-                volumes:
-                  - postgres-data:/var/lib/postgresql/data
-                healthcheck:
-                  test: ["CMD-SHELL", "pg_isready -U taskflow_admin -d taskflow_db"]
-                  interval: 5s
-                  timeout: 5s
-                  retries: 5
-
               taskflow:
                 image: ghcr.io/${{ github.repository }}:latest
                 container_name: taskflow-app
@@ -119,12 +104,20 @@ jobs:
                   - HOST=0.0.0.0
                   - ENVIRONMENT=production
                   - DEBUG=false
-                  - SECRET_KEY=${{ secrets.SECRET_KEY || 'prod-secure-taskflow-secret-key-32bytes-long' }}
-                  - DATABASE_URL=postgresql://taskflow_admin:${{ secrets.POSTGRES_PASSWORD || 'taskflow_secure_prod_password_2026' }}@db:5432/taskflow_db
+                  - SECRET_KEY=${{ secrets.SECRET_KEY }}
+                  - DATABASE_URL=${{ secrets.DATABASE_URL }}
                   - ALLOWED_ORIGINS=*
-                depends_on:
-                  db:
-                    condition: service_healthy
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+                  start_period: 40s
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "10m"
+                    max-file: "3"
 
               monitoring:
                 image: louislam/uptime-kuma:1
@@ -134,18 +127,37 @@ jobs:
                   - "3001:3001"
                 volumes:
                   - uptime-kuma-data:/app/data
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "5m"
+                    max-file: "2"
 
             volumes:
-              postgres-data:
               uptime-kuma-data:
-            EOF
+            COMPOSE
 
-            echo "[*] Pulling latest container images..."
+            echo "[3/5] Pulling latest container image..."
             docker compose pull taskflow
 
-            echo "[*] Deploying TaskFlow, PostgreSQL Database, and Monitoring..."
+            echo "[4/5] Deploying TaskFlow + Uptime Kuma..."
             docker compose up -d --remove-orphans
 
-            echo "[*] Verifying deployment health..."
-            sleep 8
-            curl -f http://127.0.0.1/health || docker logs --tail 50 taskflow-app
+            # Clean up old images to save disk space
+            docker image prune -f
+
+            echo "[5/5] Verifying application health..."
+            sleep 15
+            for i in {1..5}; do
+              if curl -sf http://127.0.0.1/health; then
+                echo ""
+                echo "✅ Deployment successful! TaskFlow is live."
+                exit 0
+              fi
+              echo "Health check attempt $i/5 — waiting 10s..."
+              sleep 10
+            done
+
+            echo "❌ Health check failed after 5 attempts — dumping logs for debugging"
+            docker logs --tail 100 taskflow-app
+            exit 1
