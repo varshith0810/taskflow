@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: ghcr.io/varshith0810/TaskFlow:latest
-    container_name: taskflow-app
+    container_name: taskflow-prod
     restart: always
     ports:
       - "80:8000"
