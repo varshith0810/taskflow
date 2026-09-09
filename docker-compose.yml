@@ -1,10 +1,27 @@
 services:
-  taskflow:
+  # ── 1. Database: PostgreSQL 16 ──────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: taskflow-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-taskflow_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taskflow_secure_password_123}
+      POSTGRES_DB: ${POSTGRES_DB:-taskflow_db}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taskflow_admin} -d ${POSTGRES_DB:-taskflow_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── 2. Application: FastAPI Backend + React Frontend ────────────────────
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/varshith0810/taskflow
-    container_name: taskflow-prod
+    image: ghcr.io/varshith0810/taskflow:latest
+    container_name: taskflow-app
     restart: always
     ports:
       - "80:8000"
@@ -14,10 +31,22 @@ services:
       - ENVIRONMENT=production
       - DEBUG=false
       - SECRET_KEY=${SECRET_KEY:-prod-secure-taskflow-secret-key-32bytes-long}
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/task_manager.db}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taskflow_admin}:${POSTGRES_PASSWORD:-taskflow_secure_password_123}@db:5432/${POSTGRES_DB:-taskflow_db}
+      - ALLOWED_ORIGINS=*
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── 3. Monitoring: Uptime Kuma Dashboard & Alerting ──────────────────────
+  monitoring:
+    image: louislam/uptime-kuma:1
+    container_name: taskflow-monitor
+    restart: always
+    ports:
+      - "3001:3001"
     volumes:
-      - taskflow-data:/app/data
+      - uptime-kuma-data:/app/data
 
 volumes:
-  taskflow-data:
+  postgres-data:
+  uptime-kuma-data:

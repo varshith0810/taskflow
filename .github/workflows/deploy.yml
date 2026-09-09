@@ -83,31 +83,69 @@ jobs:
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            echo "[*] Pulling latest Docker image from GHCR..."
+            mkdir -p ~/taskflow
+            cd ~/taskflow
+
+            echo "[*] Authenticating with GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker pull ghcr.io/${{ github.repository }}:latest
 
-            echo "[*] Stopping previous container if running..."
-            docker stop taskflow-app || true
-            docker rm taskflow-app || true
+            echo "[*] Writing docker-compose.yml configuration..."
+            cat << 'EOF' > docker-compose.yml
+            services:
+              db:
+                image: postgres:16-alpine
+                container_name: taskflow-postgres
+                restart: always
+                environment:
+                  POSTGRES_USER: taskflow_admin
+                  POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'taskflow_secure_prod_password_2026' }}
+                  POSTGRES_DB: taskflow_db
+                volumes:
+                  - postgres-data:/var/lib/postgresql/data
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U taskflow_admin -d taskflow_db"]
+                  interval: 5s
+                  timeout: 5s
+                  retries: 5
 
-            echo "[*] Launching new TaskFlow container..."
-            docker volume create taskflow-data || true
+              taskflow:
+                image: ghcr.io/${{ github.repository }}:latest
+                container_name: taskflow-app
+                restart: always
+                ports:
+                  - "80:8000"
+                environment:
+                  - PORT=8000
+                  - HOST=0.0.0.0
+                  - ENVIRONMENT=production
+                  - DEBUG=false
+                  - SECRET_KEY=${{ secrets.SECRET_KEY || 'prod-secure-taskflow-secret-key-32bytes-long' }}
+                  - DATABASE_URL=postgresql://taskflow_admin:${{ secrets.POSTGRES_PASSWORD || 'taskflow_secure_prod_password_2026' }}@db:5432/taskflow_db
+                  - ALLOWED_ORIGINS=*
+                depends_on:
+                  db:
+                    condition: service_healthy
 
-            docker run -d \
-              --name taskflow-app \
-              --restart always \
-              -p 80:8000 \
-              -v taskflow-data:/app/data \
-              -e PORT=8000 \
-              -e HOST=0.0.0.0 \
-              -e ENVIRONMENT=production \
-              -e DEBUG=false \
-              -e SECRET_KEY="${{ secrets.SECRET_KEY || 'default-production-secret-key-32-chars-long' }}" \
-              -e DATABASE_URL="sqlite:////app/data/task_manager.db" \
-              -e ALLOWED_ORIGINS="*" \
-              ghcr.io/${{ github.repository }}:latest
+              monitoring:
+                image: louislam/uptime-kuma:1
+                container_name: taskflow-monitor
+                restart: always
+                ports:
+                  - "3001:3001"
+                volumes:
+                  - uptime-kuma-data:/app/data
 
-            echo "[*] Verifying container health..."
-            sleep 5
+            volumes:
+              postgres-data:
+              uptime-kuma-data:
+            EOF
+
+            echo "[*] Pulling latest container images..."
+            docker compose pull taskflow
+
+            echo "[*] Deploying TaskFlow, PostgreSQL Database, and Monitoring..."
+            docker compose up -d --remove-orphans
+
+            echo "[*] Verifying deployment health..."
+            sleep 8
             curl -f http://127.0.0.1/health || docker logs --tail 50 taskflow-app
