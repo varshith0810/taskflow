@@ -1,27 +1,15 @@
 """
 Team Task Manager – FastAPI application factory.
+Frontend is hosted on S3 + CloudFront. This server is API-only.
 """
 from contextlib import asynccontextmanager
-from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.migrations import ensure_user_organization_column
 from app.db.session import Base, engine
 
-# Static files: check container path first, then fallback to local repo build
-STATIC_DIR = Path("/app/static")
-if not STATIC_DIR.exists():
-    _local_static = Path(__file__).resolve().parent.parent / "static"
-    if _local_static.exists():
-        STATIC_DIR = _local_static
-    else:
-        _frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-        if _frontend_dist.exists():
-            STATIC_DIR = _frontend_dist
 
 
 @asynccontextmanager
@@ -76,18 +64,6 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["Health"])
     def health():
         return {"status": "ok", "version": settings.APP_VERSION}
-
-    # Serve React static assets
-    assets_dir = STATIC_DIR / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        index = STATIC_DIR / "index.html"
-        if index.exists():
-            return FileResponse(str(index))
-        return {"detail": "Frontend not found"}
 
     return app
 app = create_app()
