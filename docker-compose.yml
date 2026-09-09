@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/varshith0810/taskflow:latest
+    image: ghcr.io/varshith0810/TaskFlow:latest
     container_name: taskflow-app
     restart: always
     ports:
