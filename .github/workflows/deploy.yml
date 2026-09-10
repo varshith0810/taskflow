@@ -71,11 +71,7 @@ jobs:
             --cache-control "no-cache, no-store, must-revalidate" \
             --delete
 
-      - name: Invalidate CloudFront Cache
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --paths "/*"
+      
 
   # ── Step 2b: Build & Push Backend Image to GHCR ──────────────────────────
   build-backend:
@@ -145,7 +141,7 @@ jobs:
                   - DEBUG=false
                   - SECRET_KEY=${{ secrets.SECRET_KEY }}
                   - DATABASE_URL=${{ secrets.DATABASE_URL }}
-                  - ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS }}
+                  
                 healthcheck:
                   test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
                   interval: 30s
