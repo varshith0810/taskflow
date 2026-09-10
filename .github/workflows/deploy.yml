@@ -1,4 +1,4 @@
-name: CI/CD Pipeline - AWS Low-Cost Deployment
+name: CI/CD Pipeline — TaskFlow (S3 Frontend + EC2 Backend)
 
 on:
   push:
@@ -8,54 +8,94 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write   # Required for OIDC (AWS credential-less auth)
 
 jobs:
-  # ── Step 1: Run Automated Tests ──────────────────────────────────────────
+  # ── Step 1: Run Backend Tests ─────────────────────────────────────────────
   test:
-    name: Run Automated Tests
+    name: Run Backend Tests
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
+      - run: |
+          pip install -r backend/requirements.txt pytest httpx
+          pytest backend/tests -v
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pytest httpx
-
-      - name: Run Backend Tests
-        run: |
-          pytest backend/tests
-
-  # ── Step 2: Build & Push Container Image to GHCR ────────────────────────
-  build-and-push:
-    name: Build & Push Docker Image
+  # ── Step 2a: Build React & Deploy to S3 ──────────────────────────────────
+  deploy-frontend:
+    name: Build React & Deploy to S3
     needs: test
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build React App
+        working-directory: frontend
+        env:
+          # Points to the FastAPI backend (EC2 Elastic IP or domain)
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: npm run build
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Sync React Build to S3
+        run: |
+          # Upload all assets with long cache (1 year) — hashed filenames
+          aws s3 sync frontend/dist/assets s3://${{ secrets.S3_BUCKET_NAME }}/assets \
+            --cache-control "public, max-age=31536000, immutable" \
+            --delete
+
+          # Upload HTML and root files with no-cache (always fresh)
+          aws s3 sync frontend/dist s3://${{ secrets.S3_BUCKET_NAME }} \
+            --exclude "assets/*" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --delete
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"
+
+  # ── Step 2b: Build & Push Backend Image to GHCR ──────────────────────────
+  build-backend:
+    name: Build & Push Backend Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry (GHCR)
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Docker Image
+      - name: Build and Push Backend Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -67,64 +107,56 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Step 3: Deploy to AWS via SSH ───────────────────────────────────────
-  deploy:
-    name: Deploy to AWS
-    needs: build-and-push
+  # ── Step 3: Deploy Backend to EC2 ────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend to EC2
+    needs: [deploy-frontend, build-backend]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-
     steps:
-      - name: Deploy on AWS Server
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.AWS_HOST }}
-          username: ${{ secrets.AWS_SSH_USER || 'ubuntu' }}
+          username: ${{ secrets.AWS_SSH_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-          port: 22
+          port: ${{ secrets.AWS_SSH_PORT || 22 }}
           script: |
-            mkdir -p ~/taskflow
-            cd ~/taskflow
+            set -e
+            mkdir -p ~/taskflow && cd ~/taskflow
 
-            echo "[*] Authenticating with GHCR..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "[1/5] Authenticating with GHCR..."
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+              -u ${{ github.actor }} --password-stdin
 
-            echo "[*] Writing docker-compose.yml configuration..."
-            cat << 'EOF' > docker-compose.yml
+            echo "[2/5] Writing docker-compose.yml (API backend only)..."
+            cat > docker-compose.yml << 'COMPOSE'
             services:
-              db:
-                image: postgres:16-alpine
-                container_name: taskflow-postgres
-                restart: always
-                environment:
-                  POSTGRES_USER: taskflow_admin
-                  POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'taskflow_secure_prod_password_2026' }}
-                  POSTGRES_DB: taskflow_db
-                volumes:
-                  - postgres-data:/var/lib/postgresql/data
-                healthcheck:
-                  test: ["CMD-SHELL", "pg_isready -U taskflow_admin -d taskflow_db"]
-                  interval: 5s
-                  timeout: 5s
-                  retries: 5
-
-              taskflow:
+              taskflow-api:
                 image: ghcr.io/${{ github.repository }}:latest
-                container_name: taskflow-app
+                container_name: taskflow-api
                 restart: always
                 ports:
-                  - "80:8000"
+                  - "8000:8000"
                 environment:
                   - PORT=8000
                   - HOST=0.0.0.0
                   - ENVIRONMENT=production
                   - DEBUG=false
-                  - SECRET_KEY=${{ secrets.SECRET_KEY || 'prod-secure-taskflow-secret-key-32bytes-long' }}
-                  - DATABASE_URL=postgresql://taskflow_admin:${{ secrets.POSTGRES_PASSWORD || 'taskflow_secure_prod_password_2026' }}@db:5432/taskflow_db
-                  - ALLOWED_ORIGINS=*
-                depends_on:
-                  db:
-                    condition: service_healthy
+                  - SECRET_KEY=${{ secrets.SECRET_KEY }}
+                  - DATABASE_URL=${{ secrets.DATABASE_URL }}
+                  - ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS }}
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+                  start_period: 40s
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "10m"
+                    max-file: "3"
 
               monitoring:
                 image: louislam/uptime-kuma:1
@@ -134,18 +166,34 @@ jobs:
                   - "3001:3001"
                 volumes:
                   - uptime-kuma-data:/app/data
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "5m"
+                    max-file: "2"
 
             volumes:
-              postgres-data:
               uptime-kuma-data:
-            EOF
+            COMPOSE
 
-            echo "[*] Pulling latest container images..."
-            docker compose pull taskflow
+            echo "[3/5] Pulling latest backend image..."
+            docker compose pull taskflow-api
 
-            echo "[*] Deploying TaskFlow, PostgreSQL Database, and Monitoring..."
+            echo "[4/5] Deploying backend + monitoring..."
             docker compose up -d --remove-orphans
+            docker image prune -f
 
-            echo "[*] Verifying deployment health..."
-            sleep 8
-            curl -f http://127.0.0.1/health || docker logs --tail 50 taskflow-app
+            echo "[5/5] Verifying API health..."
+            sleep 15
+            for i in {1..5}; do
+              if curl -sf http://127.0.0.1:8000/health; then
+                echo ""
+                echo "✅ Backend deployment successful!"
+                exit 0
+              fi
+              echo "Health check attempt $i/5 — waiting 10s..."
+              sleep 10
+            done
+            echo "❌ Health check failed — dumping logs"
+            docker logs --tail 100 taskflow-api
+            exit 1
