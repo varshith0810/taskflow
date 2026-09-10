@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 name: CI/CD Pipeline — TaskFlow (S3 Frontend + EC2 Backend)
+=======
+name: CI/CD Pipeline — taskflow (S3 Frontend + EC2 Backend)
+>>>>>>> 622474bb0b32720bff5f0230238ad7b2033ebd2d
 
 on:
   push:
@@ -71,11 +75,15 @@ jobs:
             --cache-control "no-cache, no-store, must-revalidate" \
             --delete
 
-      - name: Invalidate CloudFront Cache
+      - name: Invalidate CloudFront Cache (if configured)
+        if: ${{ env.CLOUDFRONT_DISTRIBUTION_ID != '' }}
+        env:
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
         run: |
           aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
             --paths "/*"
+
 
   # ── Step 2b: Build & Push Backend Image to GHCR ──────────────────────────
   build-backend:
@@ -145,7 +153,11 @@ jobs:
                   - DEBUG=false
                   - SECRET_KEY=${{ secrets.SECRET_KEY }}
                   - DATABASE_URL=${{ secrets.DATABASE_URL }}
+<<<<<<< HEAD
                   - ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS }}
+=======
+                  
+>>>>>>> 622474bb0b32720bff5f0230238ad7b2033ebd2d
                 healthcheck:
                   test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
                   interval: 30s
