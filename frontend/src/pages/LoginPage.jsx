@@ -4,13 +4,6 @@ import { useAuth } from '../context/AuthContext';
 import { Button, Input } from '../components/ui';
 import './Auth.css';
 
-const SEEDED_COMPANIES = [
-  { name: 'Acme Corp', manager: 'manager@acme.com', employee: 'bob@acme.com' },
-  { name: 'Globex Systems', manager: 'manager@globex.com', employee: 'grace@globex.com' },
-  { name: 'Initech Software', manager: 'manager@initech.com', employee: 'milton@initech.com' },
-  { name: 'Umbrella Corp', manager: 'manager@umbrella.com', employee: 'jill@umbrella.com' },
-];
-
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -26,10 +19,6 @@ export default function LoginPage() {
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
-  const quickFill = (email) => {
-    setForm({ email, password: 'Test@Password123' });
-    setError('');
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -77,36 +66,7 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        {/* Quick-fill Seeded Accounts Helper */}
-        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 8 }}>
-            Quick-Fill Seeded Accounts (Password: Test@Password123):
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            {SEEDED_COMPANIES.map(c => (
-              <div key={c.name} style={{ background: 'var(--bg-2, rgba(255,255,255,0.04))', padding: '8px 10px', borderRadius: 6, fontSize: 11 }}>
-                <div style={{ fontWeight: 600, color: 'var(--text-1)', marginBottom: 4 }}>{c.name}</div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={() => quickFill(c.manager)}
-                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent, #6366f1)', cursor: 'pointer', textDecoration: 'underline', fontSize: 11 }}
-                  >
-                    Manager
-                  </button>
-                  <span style={{ color: 'var(--text-3)' }}>|</span>
-                  <button
-                    type="button"
-                    onClick={() => quickFill(c.employee)}
-                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-2)', cursor: 'pointer', textDecoration: 'underline', fontSize: 11 }}
-                  >
-                    Employee
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+
 
         <div className="auth-footer" style={{ marginTop: 16 }}>
           Don't have an account? <Link to="/signup">Create one</Link>
