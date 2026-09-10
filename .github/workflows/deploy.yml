@@ -1,4 +1,4 @@
-name: CI/CD Pipeline — TaskFlow (S3 Frontend + EC2 Backend)
+name: CI/CD Pipeline — taskflow (S3 Frontend + EC2 Backend)
 
 on:
   push:
