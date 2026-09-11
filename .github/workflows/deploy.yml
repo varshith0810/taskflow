@@ -129,8 +129,21 @@ jobs:
             set -e
             mkdir -p ~/taskflow && cd ~/taskflow
 
+            echo "[0/5] Ensuring Docker and Docker Compose are installed..."
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install -y docker.io docker-compose-v2
+              sudo systemctl enable --now docker
+            fi
+            sudo usermod -aG docker $USER || true
+
+            # Stop standalone systemd service if running to prevent port 80 conflicts
+            sudo systemctl stop taskflow 2>/dev/null || true
+            sudo systemctl disable taskflow 2>/dev/null || true
+            sudo iptables -t nat -D PREROUTING -p tcp --dport 8000 -j REDIRECT --to-port 80 2>/dev/null || true
+
             echo "[1/5] Authenticating with GHCR..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io \
               -u ${{ github.actor }} --password-stdin
 
             echo "[2/5] Writing docker-compose.yml (API backend only)..."
@@ -141,6 +154,7 @@ jobs:
                 container_name: taskflow-api
                 restart: always
                 ports:
+                  - "80:8000"
                   - "8000:8000"
                 environment:
                   - PORT=8000
@@ -181,16 +195,16 @@ jobs:
             COMPOSE
 
             echo "[3/5] Pulling latest backend image..."
-            docker compose pull taskflow-api
+            sudo docker compose pull taskflow-api
 
             echo "[4/5] Deploying backend + monitoring..."
-            docker compose up -d --remove-orphans
-            docker image prune -f
+            sudo docker compose up -d --remove-orphans
+            sudo docker image prune -f
 
             echo "[5/5] Verifying API health..."
             sleep 15
             for i in {1..5}; do
-              if curl -sf http://127.0.0.1:8000/health; then
+              if curl -sf http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:80/health; then
                 echo ""
                 echo "✅ Backend deployment successful!"
                 exit 0
@@ -199,5 +213,5 @@ jobs:
               sleep 10
             done
             echo "❌ Health check failed — dumping logs"
-            docker logs --tail 100 taskflow-api
+            sudo docker logs --tail 100 taskflow-api
             exit 1
